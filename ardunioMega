@@ -8,10 +8,17 @@
 
 // ==============================
 
-//Is script paused
-bool scriptPaused = false;
+// Is script error paused
+bool scriptErrorPaused = false;
 
-//Last sending out of data
+// Last compleated command before script error
+int lastCompleateCommandStringExecution = -1;
+int lastCompleateCommandExecution = -1;
+
+// Is script delayed and waiting for input
+bool scriptWait = false;
+
+// Last sending out of data in miliseconds
 int lastDataSend = 0;
 
 // Min/Max step delay
@@ -107,7 +114,7 @@ String msgForAttemptSendOverSerial = "Running";
 
 void sendData() {
   if (millis() > lastDataSend + 5000) {
-    Serial1.println("U" + String(!scriptPaused) + ";E;E;" + String(stepDelayZ) + ";");
+    Serial1.println("U" + String(!scriptErrorPaused) + ";E;E;" + String(stepDelayZ) + ";");
 
     lastDataSend = millis();
   }
@@ -166,7 +173,7 @@ void stepMotorX(int step) {
 
   checkCommunication();
 
-  if (scriptPaused) {
+  if (scriptErrorPaused) {
     return;
   }
   digitalWrite(IN1X, steps[step][0]);
@@ -199,7 +206,7 @@ void stepMotorXBackward() {
 void stepMotorZ(int step) {
 
   checkCommunication();
-  if (scriptPaused) {
+  if (scriptErrorPaused) {
     return;
   }
 
@@ -262,6 +269,12 @@ void stepMotorZRun(bool run) {
   lastMilisecZ = currentMillis;
 }
 
+// Hold motor positions with force
+void holdMotorPositions(){
+  stepMotorXRun(true);
+  stepMotorZRun(true);
+}
+
 // Set All Motor Positions to 0
 void homeStepperMotorsPositions() {
   // Motor Z Homing Routine
@@ -272,7 +285,7 @@ void homeStepperMotorsPositions() {
   int stepsFromLeverZ = 0;
   int stepsReturnLeverZ = 0;
 
-  // Step until lever is hit (HIGH)
+  // Step to until lever is hit (HIGH)
   for (int i = 0; i < 5000; i++) {
     stepMotorZForward();
     delay(stepDelayZ);
@@ -290,7 +303,7 @@ void homeStepperMotorsPositions() {
           motorHomeCompleationZ += 1;
           stepsFromLeverZ = j;
 
-          // Step back until lever is hit again (HIGH)
+          // Step to until lever is hit again (HIGH)
           delay(500);
           for (int k = 0; k < 1500; k++) {
             stepMotorZForward();
@@ -309,49 +322,109 @@ void homeStepperMotorsPositions() {
     }
   }
 
-  stepMotorZRun(false);
+ stepMotorZRun(false);
 
   lastStepZ = 0;
 
   if (motorHomeCompleationZ != 3) {
 
     msgForAttemptSendOverSerial = "ERROR HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
-    scriptPaused = true;
+    scriptErrorPaused = true;
   } else {
     //msgForAttemptSendOverSerial = "Success HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
   }
   checkCommunication();
 }
 
+// Execute indviual command
 void executeCommand(String givenString) {
 
-  char order = givenString[0];
-  String orderInfo = givenString.substring(1);
+  // Task of command
+  char task = givenString[0];
 
-  if (order == 'A') {
-    scriptPaused = true;
+  // info for task to be executed, if any
+  String taskInfo = givenString.substring(1);
+
+  // pause script due to error
+  if (task == 'A') {
+    scriptErrorPaused = true;
   }
-  if (order == 'B') {
+  // unpasue script due to error
+  if (task == 'B') {
+    scriptErrorPaused = false;
   }
-  if (order == 'C') {
+  // put script into wait mode
+  if (task == 'C') {
+    scriptWait = true;
   }
-  if (order == 'D') {
+  // remove script from wait mode
+  if (task == 'D') {
+    scriptWait = false;
   }
-  if (order == 'E') {
+  // step motor x forward
+  if (task == 'E') {
     stepMotorXForward();
   }
-  if (order == 'F') {
+  // step motor x backward
+  if (task == 'F') {
     stepMotorXBackward();
   }
-  if (order == 'G') {
+  // step motor z forward
+  if (task == 'G') {
     stepMotorZForward();
   }
-  if (order == 'H') {
+  // step motor z backward
+  if (task == 'H') {
     stepMotorZBackward();
   }
-  if (order == 'I') {
+  // step motor x for steps unknown
+  if (task == 'I') {
+
+    // Get varibles for loop
+    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    int steps = atoi(taskInfo + 2);
+
+    while (steps != 0) {
+      // move steps number one step toward zero
+      steps += (steps > 0 ? -1 : +1);
+
+      if (x >= 0) {
+        stepMotorXForward();
+      } else {
+        stepMotorXBackward();
+      }
+
+      delay(tempdelay)
+    }
   }
-  if (order == 'J') {
+  // step motor z for steps unknown
+  if (task == 'J') {
+     // Get varibles for loop
+    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    int steps = atoi(taskInfo + 2);
+
+    while (steps != 0) {
+      // move steps number one step toward zero
+      steps += (steps > 0 ? -1 : +1);
+
+      if (x >= 0) {
+        stepMotorZForward();
+      } else {
+        stepMotorZBackward();
+      }
+
+      delay(tempdelay)
+    }
+  }
+  // hold all motor positions with force
+  if (task == 'K') {
+    holdMotorPositions();
+  }
+  if (task == 'L') {
+  }
+  if (task == 'M') {
+  }
+  if (task == 'N') {
   }
 }
 
@@ -392,6 +465,7 @@ void runCommands() {
 }
 }
 
+// Set up script
 void setup() {
 
   Serial1.begin(9600);  // Initialize Serial1 (TX1/RX1) at 9600 baud
@@ -413,15 +487,16 @@ void setup() {
   pinMode(ENABLE_PINX, OUTPUT);
   pinMode(PressureLever_ReadX, INPUT);
 
+  // Find and home motor positions
   homeStepperMotorsPositions();
+
   checkCommunication();
 }
 
+// Ongoing script
 void loop() {
 
-
-
-  if (scriptPaused) {
+  if (scriptErrorPaused) {
 
     checkCommunication();
 
