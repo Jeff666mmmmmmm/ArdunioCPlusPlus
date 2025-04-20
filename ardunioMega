@@ -1,0 +1,432 @@
+#include <Arduino.h>
+#include <RPC.h>
+
+// ==============================
+
+// Ardunio Info
+
+
+// ==============================
+
+//Is script paused
+bool scriptPaused = false;
+
+//Last sending out of data
+int lastDataSend = 0;
+
+// Min/Max step delay
+const float minStepDelay = 2.5;
+const int maxStepDelay = 8;
+
+// X H-bridge pins
+const int IN1X = 25;
+const int IN2X = 27;
+const int IN3X = 29;
+const int IN4X = 31;
+
+// X motor enable pin
+const int ENABLE_PINX = 23;
+
+// PressureLeaver activated read at pos 0
+const int PressureLever_ReadX = 35;
+
+// X step delay live in milliseconds
+int stepDelayX = 5;
+
+// X last step recorded
+int lastStepX = 0;
+
+// X Posiotion from 0
+volatile int motorStepPositionX = 0;
+volatile int motorStepCompleationX = 0;
+
+volatile int motorUptimeX = 0;    // Time the motor is running (milliseconds)
+volatile int motorDowntimeX = 0;  // Time the motor is stopped (milliseconds)
+unsigned long lastMilisecX = 0;   // Store last time check
+
+// ==============================
+
+// Z H-bridge pins
+const int IN1Z = 24;
+const int IN2Z = 26;
+const int IN3Z = 28;
+const int IN4Z = 30;
+
+// Z motor enable pin
+const int ENABLE_PINZ = 22;
+
+// PressureLeaver activated read at pos 0
+const int PressureLever_ReadZ = 34;
+
+// Z step delay live in milliseconds
+int stepDelayZ = 5;
+
+// Z last step recorded
+int lastStepZ = 0;
+
+// Z Posiotion from 0
+volatile int motorStepPositionZ = 0;
+volatile int motorStepCompleationZ = 0;
+
+volatile int motorUptimeZ = 0;    // Time the motor is running (milliseconds)
+volatile int motorDowntimeZ = 0;  // Time the motor is stopped (milliseconds)
+unsigned long lastMilisecZ = 0;   // Store last time check
+
+// ==============================
+
+// Stepper motor sequence for 4-step drive
+const int steps[4][4] = {
+  { 1, 0, 1, 0 },  // Step 1
+  { 0, 1, 1, 0 },  // Step 2
+  { 0, 1, 0, 1 },  // Step 3
+  { 1, 0, 0, 1 }   // Step 4
+};
+
+// ==============================
+
+// Data to run immediately
+String commandNow = "";
+
+// Save data from server to execute later in order
+
+// Define the number of executable commands
+const int numCommands = 10;
+
+// Create an array of Strings to hold your commands
+String commands[numCommands];
+
+// Current executing info
+int currentCommandStringExecution = 1;
+int currentCommandExecution = 1;
+int currentCommandNumber = 1;
+
+// String to send out to cloud
+String msgForAttemptSendOverSerial = "Running";
+
+// ==============================
+
+void sendData() {
+  if (millis() > lastDataSend + 5000) {
+    Serial1.println("U" + String(!scriptPaused) + ";E;E;" + String(stepDelayZ) + ";");
+
+    lastDataSend = millis();
+  }
+}
+
+
+void checkCommunication() {
+  // 1. Check if the other Arduino is sending a message
+  if (Serial1.available() > 0) {
+    String recivedMessage = Serial1.readStringUntil('\n');  // Read incoming message
+
+    // Set up script to run new message immediately
+    if (recivedMessage[0] == 'I') {
+
+      currentCommandStringExecution = 0;
+      currentCommandExecution = 1;
+      recivedMessage = recivedMessage.substring(1);
+
+
+      // Save data to run later
+    } else {
+      if (recivedMessage[0] == 'S') {
+        recivedMessage = recivedMessage.substring(1);
+
+        // Loop to find empty slot to save data
+        for (int i = 0; i < numCommands; i++) {
+          // Check if the current command is empty
+          if (commands[i].length() == 0) {
+            commands[i] = recivedMessage;
+            recivedMessage = "";
+            break;
+          }
+        }
+
+        if (recivedMessage.length() > 1) {
+          msgForAttemptSendOverSerial = "ERROR command storage full";
+        }
+      }
+    }
+    recivedMessage = recivedMessage.substring(1);  // Ignore first character
+  }
+
+  // 2. If no incoming message, send message if "msgForAttemptSendOverSerial" is not empty
+  if (msgForAttemptSendOverSerial.length() > 0) {
+    Serial1.println("O" + msgForAttemptSendOverSerial);  // Send the message
+    msgForAttemptSendOverSerial = "";                    // Clear the message after sending
+    lastDataSend = millis();
+  } else {
+
+    sendData();  // Attempt to update ardunio cloud (send data to wifi ardunio)
+  }
+}
+
+// Function to energize X stepper motor coils
+void stepMotorX(int step) {
+
+  checkCommunication();
+
+  if (scriptPaused) {
+    return;
+  }
+  digitalWrite(IN1X, steps[step][0]);
+  digitalWrite(IN2X, steps[step][1]);
+  digitalWrite(IN3X, steps[step][2]);
+  digitalWrite(IN4X, steps[step][3]);
+
+  // Direction
+  int diff = (step - lastStepX + 4) % 4;
+  if (diff == 1) {
+    motorStepPositionX++;  // Forward move
+  } else if (diff == 3) {
+    motorStepPositionX--;  // Backward move
+  }
+  lastStepX = step;
+  motorStepCompleationX++;
+}
+
+void stepMotorXForward() {
+  int nextStep = (lastStepX + 1) % 4;
+  stepMotorX(nextStep);
+}
+
+void stepMotorXBackward() {
+  int nextStep = (lastStepX + 3) % 4;
+  stepMotorX(nextStep);
+}
+
+// Function to energize Z stepper motor coils
+void stepMotorZ(int step) {
+
+  checkCommunication();
+  if (scriptPaused) {
+    return;
+  }
+
+  digitalWrite(IN1Z, steps[step][0]);
+  digitalWrite(IN2Z, steps[step][1]);
+  digitalWrite(IN3Z, steps[step][2]);
+  digitalWrite(IN4Z, steps[step][3]);
+
+  // Direction
+  int diff = (step - lastStepZ + 4) % 4;
+  if (diff == 1) {
+    motorStepPositionZ++;  // Forward move
+  } else if (diff == 3) {
+    motorStepPositionZ--;  // Backward move
+  }
+
+
+  lastStepZ = step;
+  motorStepCompleationZ++;
+}
+
+void stepMotorZForward() {
+  int nextStep = (lastStepZ + 1) % 4;
+  stepMotorZ(nextStep);
+}
+
+void stepMotorZBackward() {
+  int nextStep = (lastStepZ + 3) % 4;
+  stepMotorZ(nextStep);
+}
+void stepMotorXRun(bool run) {
+  unsigned long currentMillis = millis();  // Get the current time
+
+  // Update uptime or downtime based on the motor state
+  if (run) {
+    motorUptimeX += currentMillis - lastMilisecX;  // Increment uptime
+    digitalWrite(ENABLE_PINX, HIGH);               // Turn motor on
+  } else {
+    motorDowntimeX += currentMillis - lastMilisecX;  // Increment downtime
+    digitalWrite(ENABLE_PINX, LOW);                  // Turn motor off
+  }
+
+  // Update lastMillis to the current time
+  lastMilisecX = currentMillis;
+}
+
+void stepMotorZRun(bool run) {
+  unsigned long currentMillis = millis();  // Get the current time
+
+  // Update uptime or downtime based on the motor state
+  if (run) {
+    motorUptimeZ += currentMillis - lastMilisecZ;  // Increment uptime
+    digitalWrite(ENABLE_PINZ, HIGH);               // Turn motor on
+  } else {
+    motorDowntimeZ += currentMillis - lastMilisecZ;  // Increment downtime
+    digitalWrite(ENABLE_PINZ, LOW);                  // Turn motor off
+  }
+
+  // Update lastMillis to the current time
+  lastMilisecZ = currentMillis;
+}
+
+// Set All Motor Positions to 0
+void homeStepperMotorsPositions() {
+  // Motor Z Homing Routine
+  stepMotorZRun(true);
+  stepDelayZ = 4.5;
+  int motorHomeCompleationZ = 0;
+  int stepsToLeverZ = 0;
+  int stepsFromLeverZ = 0;
+  int stepsReturnLeverZ = 0;
+
+  // Step until lever is hit (HIGH)
+  for (int i = 0; i < 5000; i++) {
+    stepMotorZForward();
+    delay(stepDelayZ);
+
+    if (digitalRead(PressureLever_ReadZ) == HIGH) {
+      motorHomeCompleationZ += 1;
+      stepsToLeverZ = i;
+      stepDelayZ = 6;
+      // Step away until lever is released (LOW)
+      delay(500);
+      for (int j = 1500; j > 0; j--) {
+        stepMotorZBackward();
+        delay(stepDelayZ);
+        if (digitalRead(PressureLever_ReadZ) == LOW) {
+          motorHomeCompleationZ += 1;
+          stepsFromLeverZ = j;
+
+          // Step back until lever is hit again (HIGH)
+          delay(500);
+          for (int k = 0; k < 1500; k++) {
+            stepMotorZForward();
+            delay(stepDelayZ);
+            if (digitalRead(PressureLever_ReadZ) == HIGH) {
+              motorHomeCompleationZ += 1;
+              stepsReturnLeverZ = k;
+              motorStepPositionZ = 0;
+              break;
+            }
+          }
+          break;
+        }
+      }
+      break;
+    }
+  }
+
+  stepMotorZRun(false);
+
+  lastStepZ = 0;
+
+  if (motorHomeCompleationZ != 3) {
+
+    msgForAttemptSendOverSerial = "ERROR HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
+    scriptPaused = true;
+  } else {
+    //msgForAttemptSendOverSerial = "Success HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
+  }
+  checkCommunication();
+}
+
+void executeCommand(String givenString) {
+
+  char order = givenString[0];
+  String orderInfo = givenString.substring(1);
+
+  if (order == 'A') {
+    scriptPaused = true;
+  }
+  if (order == 'B') {
+  }
+  if (order == 'C') {
+  }
+  if (order == 'D') {
+  }
+  if (order == 'E') {
+    stepMotorXForward();
+  }
+  if (order == 'F') {
+    stepMotorXBackward();
+  }
+  if (order == 'G') {
+    stepMotorZForward();
+  }
+  if (order == 'H') {
+    stepMotorZBackward();
+  }
+  if (order == 'I') {
+  }
+  if (order == 'J') {
+  }
+}
+
+void runCommands() {
+
+  string nextCommand = "";
+
+  int startIndex = 0;
+  int endIndex = numCommands[currentCommandStringExecution].indexOf(';');
+
+  // Loop through each semicolon-delimited token.
+  while (endIndex != -1) {
+
+    if (startIndex == currentCommandExecution) {}
+
+    // Extract substring from startIndex to endIndex (not including the semicolon)
+    String tempSection = input.substring(startIndex, endIndex);
+
+    // Process section if the section is non-empty.
+    if (tempSection.length() > 0) {
+
+      executeCommand(tempSection)
+    }
+
+    if (currentCommandExecution + 1 > endIndex) {
+
+      currentCommandStringExecution += 1;
+      currentCommandExecution = 1;
+
+    } else {
+
+      currentCommandExecution += 1;
+    }
+  }
+  // Update startIndex to the character after the current semicolon.
+  startIndex = endIndex + 1;
+  endIndex = input.indexOf(';', startIndex);
+}
+}
+
+void setup() {
+
+  Serial1.begin(9600);  // Initialize Serial1 (TX1/RX1) at 9600 baud
+
+  // Set control pins as outputs
+  pinMode(IN1Z, OUTPUT);
+  pinMode(IN2Z, OUTPUT);
+  pinMode(IN3Z, OUTPUT);
+  pinMode(IN4Z, OUTPUT);
+  pinMode(ENABLE_PINZ, OUTPUT);
+  pinMode(PressureLever_ReadZ, INPUT);
+
+  // ==============================
+
+  pinMode(IN1X, OUTPUT);
+  pinMode(IN2X, OUTPUT);
+  pinMode(IN3X, OUTPUT);
+  pinMode(IN4X, OUTPUT);
+  pinMode(ENABLE_PINX, OUTPUT);
+  pinMode(PressureLever_ReadX, INPUT);
+
+  homeStepperMotorsPositions();
+  checkCommunication();
+}
+
+void loop() {
+
+
+
+  if (scriptPaused) {
+
+    checkCommunication();
+
+  } else {
+
+    runCommands()
+  }
+}
