@@ -5,15 +5,10 @@
 
 // Ardunio Info
 
-
 // ==============================
 
 // Is script error paused
 bool scriptErrorPaused = false;
-
-// Last compleated command before script error
-int lastCompleateCommandStringExecution = -1;
-int lastCompleateCommandExecution = -1;
 
 // Is script delayed and waiting for input
 bool scriptWait = false;
@@ -21,9 +16,20 @@ bool scriptWait = false;
 // Last sending out of data in miliseconds
 int lastDataSend = 0;
 
+// Last Receive data in miliseconds
+int lastDataReceive = 0;
+
 // Min/Max step delay
 const float minStepDelay = 2.5;
 const int maxStepDelay = 8;
+
+// Direct color indicators pins
+
+const int goodLight = 51;
+const int dataLight = 52;
+const int errorLight = 53;
+
+// ==============================
 
 // X H-bridge pins
 const int IN1X = 25;
@@ -42,6 +48,9 @@ int stepDelayX = 5;
 
 // X last step recorded
 int lastStepX = 0;
+
+// X max step distance
+const int maxXStep = 100;
 
 // X Posiotion from 0
 volatile int motorStepPositionX = 0;
@@ -71,6 +80,9 @@ int stepDelayZ = 5;
 // Z last step recorded
 int lastStepZ = 0;
 
+// Z max step distance
+const int maxZStep = 100;
+
 // Z Posiotion from 0
 volatile int motorStepPositionZ = 0;
 volatile int motorStepCompleationZ = 0;
@@ -97,68 +109,103 @@ String commandNow = "";
 // Save data from server to execute later in order
 
 // Define the number of executable commands
-const int numCommands = 10;
+const int numCommands = 12;
 
 // Create an array of Strings to hold your commands
 String commands[numCommands];
 
-// Current executing info
-int currentCommandStringExecution = 1;
-int currentCommandExecution = 1;
+// Last executing info
+int lastCompleateCommandStringExecution = -1;
+int lastCompleateCommandExecution = -1;
+
+// Next Executing Info
 int currentCommandNumber = 1;
+int currentCommandStringExecution = 0;
+int currentCommandExecution = 0;
 
 // String to send out to cloud
 String msgForAttemptSendOverSerial = "Running";
 
 // ==============================
 
+// Send bulk data
 void sendData() {
-  if (millis() > lastDataSend + 5000) {
+  if (millis() > lastDataSend + 6000) {
     Serial1.println("U" + String(!scriptErrorPaused) + ";E;E;" + String(stepDelayZ) + ";");
 
     lastDataSend = millis();
+
+    digitalWrite(dataLight, HIGH);
+    delay(200);
+    digitalWrite(dataLight, LOW);
   }
 }
 
-
+// Serial to arudnio wifi
 void checkCommunication() {
-  // 1. Check if the other Arduino is sending a message
+
+  // Alert sending ardunio
+  Serial1.println("AAreadAA");
+
+  // Wait briefly for a response
+  unsigned long startWait = millis();
+  while (!Serial1.available() && millis() - startWait < 50) {
+    delay(1);
+  }
+
+  // Check if the other Arduino is sending a message
   if (Serial1.available() > 0) {
+
     String recivedMessage = Serial1.readStringUntil('\n');  // Read incoming message
+    lastDataReceive = millis();
+
+    digitalWrite(dataLight, HIGH);
+    delay(200);
+    digitalWrite(dataLight, LOW);
 
     // Set up script to run new message immediately
-    if (recivedMessage[0] == 'I') {
+    if (recivedMessage.length() > 0 && recivedMessage[0] == 'I') {
 
-      currentCommandStringExecution = 0;
-      currentCommandExecution = 1;
+      // Cut off protocal data
       recivedMessage = recivedMessage.substring(1);
 
+      // Run command, if succcess continue
+      if (executeCommand(nextCommand) == false) {
+        scriptErrorPaused = true;
+        digitalWrite(errorLight, HIGH);
+      }
 
       // Save data to run later
-    } else {
-      if (recivedMessage[0] == 'S') {
-        recivedMessage = recivedMessage.substring(1);
+    } else if (recivedMessage.length() > 0 && recivedMessage[0] == 'S') {
 
-        // Loop to find empty slot to save data
-        for (int i = 0; i < numCommands; i++) {
-          // Check if the current command is empty
-          if (commands[i].length() == 0) {
-            commands[i] = recivedMessage;
-            recivedMessage = "";
-            break;
-          }
-        }
+      // Cut off protocal data
+      recivedMessage = recivedMessage.substring(1);
 
-        if (recivedMessage.length() > 1) {
-          msgForAttemptSendOverSerial = "ERROR command storage full";
+      // Loop to find empty slot to save data
+      for (int i = 0; i < numCommands; i++) {
+        // Check if the current command is empty
+        if (commands[i].length() == 0) {
+          commands[i] = recivedMessage;
+          recivedMessage = "";
+          break;
         }
       }
+
+      if (recivedMessage.length() > 1) {
+        msgForAttemptSendOverSerial = "ERROR command storage full";
+      }
     }
+
     recivedMessage = recivedMessage.substring(1);  // Ignore first character
   }
 
   // 2. If no incoming message, send message if "msgForAttemptSendOverSerial" is not empty
   if (msgForAttemptSendOverSerial.length() > 0) {
+
+    digitalWrite(dataLight, HIGH);
+    delay(200);
+    digitalWrite(dataLight, LOW);
+
     Serial1.println("O" + msgForAttemptSendOverSerial);  // Send the message
     msgForAttemptSendOverSerial = "";                    // Clear the message after sending
     lastDataSend = millis();
@@ -169,75 +216,97 @@ void checkCommunication() {
 }
 
 // Function to energize X stepper motor coils
-void stepMotorX(int step) {
-
-  checkCommunication();
+bool stepMotorX(int step, bool ignoreBounds) {
 
   if (scriptErrorPaused) {
-    return;
+    return false;
   }
+
+  // Direction
+  int direction = (step - lastStepX + 4) % 4;
+
+  // Ensure it is within bounds and then update position
+  if (direction == 1 && (motorStepPositionX + 1 <= maxXStep || ignoreBounds)) {
+    motorStepPositionX++;
+  } else if (direction == 3 && (0 > motorStepPositionX - 1 || ignoreBounds)) {
+    motorStepPositionX--;
+  } else {
+    // Out of bounds
+    return false;
+  }
+
+  // Move physical motor
   digitalWrite(IN1X, steps[step][0]);
   digitalWrite(IN2X, steps[step][1]);
   digitalWrite(IN3X, steps[step][2]);
   digitalWrite(IN4X, steps[step][3]);
 
-  // Direction
-  int diff = (step - lastStepX + 4) % 4;
-  if (diff == 1) {
-    motorStepPositionX++;  // Forward move
-  } else if (diff == 3) {
-    motorStepPositionX--;  // Backward move
-  }
+  // Last X move
   lastStepX = step;
+  // Add step move
   motorStepCompleationX++;
+
+  // Correctly functioned
+  return true;
 }
 
-void stepMotorXForward() {
+void stepMotorXForward(bool ignoreBounds) {
   int nextStep = (lastStepX + 1) % 4;
-  stepMotorX(nextStep);
+  stepMotorX(nextStep, ignoreBounds);
 }
 
-void stepMotorXBackward() {
+void stepMotorXBackward(bool ignoreBounds) {
   int nextStep = (lastStepX + 3) % 4;
-  stepMotorX(nextStep);
+  stepMotorX(nextStep, ignoreBounds);
 }
 
 // Function to energize Z stepper motor coils
-void stepMotorZ(int step) {
+bool stepMotorZ(int step, bool ignoreBounds) {
 
-  checkCommunication();
   if (scriptErrorPaused) {
-    return;
+    return false;
   }
 
+  // Direction
+  int direction = (step - lastStepZ + 4) % 4;
+
+  // Ensure it is within bounds and then update position
+  if (direction == 1 && (motorStepPositionZ + 1 <= maxZStep || ignoreBounds)) {
+    motorStepPositionZ++;
+  } else if (direction == 3 && (0 > motorStepPositionZ - 1 || ignoreBounds)) {
+    motorStepPositionZ--;
+  } else {
+    // Out of bounds
+    return false;
+  }
+
+  // Move physical motor
   digitalWrite(IN1Z, steps[step][0]);
   digitalWrite(IN2Z, steps[step][1]);
   digitalWrite(IN3Z, steps[step][2]);
   digitalWrite(IN4Z, steps[step][3]);
 
-  // Direction
-  int diff = (step - lastStepZ + 4) % 4;
-  if (diff == 1) {
-    motorStepPositionZ++;  // Forward move
-  } else if (diff == 3) {
-    motorStepPositionZ--;  // Backward move
-  }
-
-
+  // Last Z move
   lastStepZ = step;
+  // Add step move
   motorStepCompleationZ++;
+
+  // Correctly functioned
+  return true;
 }
 
-void stepMotorZForward() {
+void stepMotorZForward(bool ignoreBounds) {
   int nextStep = (lastStepZ + 1) % 4;
-  stepMotorZ(nextStep);
+  stepMotorZ(nextStep, ignoreBounds);
 }
 
-void stepMotorZBackward() {
+void stepMotorZBackward(bool ignoreBounds) {
   int nextStep = (lastStepZ + 3) % 4;
-  stepMotorZ(nextStep);
+  stepMotorZ(nextStep, ignoreBounds);
 }
-void stepMotorXRun(bool run) {
+
+// Hold X motor
+void stepMotorXHold(bool run) {
   unsigned long currentMillis = millis();  // Get the current time
 
   // Update uptime or downtime based on the motor state
@@ -253,7 +322,8 @@ void stepMotorXRun(bool run) {
   lastMilisecX = currentMillis;
 }
 
-void stepMotorZRun(bool run) {
+// Hold Z motor
+void stepMotorZHold(bool run) {
   unsigned long currentMillis = millis();  // Get the current time
 
   // Update uptime or downtime based on the motor state
@@ -270,15 +340,15 @@ void stepMotorZRun(bool run) {
 }
 
 // Hold motor positions with force
-void holdMotorPositions(){
-  stepMotorXRun(true);
-  stepMotorZRun(true);
+void holdMotorPositions() {
+  stepMotorXHold(true);
+  stepMotorZHold(true);
 }
 
 // Set All Motor Positions to 0
 void homeStepperMotorsPositions() {
+
   // Motor Z Homing Routine
-  stepMotorZRun(true);
   stepDelayZ = 4.5;
   int motorHomeCompleationZ = 0;
   int stepsToLeverZ = 0;
@@ -287,18 +357,22 @@ void homeStepperMotorsPositions() {
 
   // Step to until lever is hit (HIGH)
   for (int i = 0; i < 5000; i++) {
-    stepMotorZForward();
+    stepMotorZForward(true);
     delay(stepDelayZ);
 
+    // Is motor touched switch
     if (digitalRead(PressureLever_ReadZ) == HIGH) {
       motorHomeCompleationZ += 1;
       stepsToLeverZ = i;
       stepDelayZ = 6;
-      // Step away until lever is released (LOW)
+
+      // Step until lever is released (LOW)
       delay(500);
       for (int j = 1500; j > 0; j--) {
-        stepMotorZBackward();
+        stepMotorZBackward(true);
         delay(stepDelayZ);
+
+        // Is motor backed away from switch
         if (digitalRead(PressureLever_ReadZ) == LOW) {
           motorHomeCompleationZ += 1;
           stepsFromLeverZ = j;
@@ -306,8 +380,10 @@ void homeStepperMotorsPositions() {
           // Step to until lever is hit again (HIGH)
           delay(500);
           for (int k = 0; k < 1500; k++) {
-            stepMotorZForward();
+            stepMotorZForward(true);
             delay(stepDelayZ);
+
+            // Is motor back onto the switch
             if (digitalRead(PressureLever_ReadZ) == HIGH) {
               motorHomeCompleationZ += 1;
               stepsReturnLeverZ = k;
@@ -322,22 +398,21 @@ void homeStepperMotorsPositions() {
     }
   }
 
- stepMotorZRun(false);
-
   lastStepZ = 0;
 
+  // Check if motor home worked
   if (motorHomeCompleationZ != 3) {
 
     msgForAttemptSendOverSerial = "ERROR HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
     scriptErrorPaused = true;
+    digitalWrite(errorLight, HIGH);
   } else {
-    //msgForAttemptSendOverSerial = "Success HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
+    msgForAttemptSendOverSerial = "Success HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
   }
-  checkCommunication();
 }
 
 // Execute indviual command
-void executeCommand(String givenString) {
+bool executeCommand(String givenString) {
 
   // Task of command
   char task = givenString[0];
@@ -347,130 +422,237 @@ void executeCommand(String givenString) {
 
   // pause script due to error
   if (task == 'A') {
+    digitalWrite(goodLight, HIGH);
+    delay(200);
+    digitalWrite(goodLight, LOW);
     scriptErrorPaused = true;
+    digitalWrite(errorLight, HIGH);
+    return true;
   }
   // unpasue script due to error
   if (task == 'B') {
+    digitalWrite(goodLight, HIGH);
+    delay(200);
+    digitalWrite(goodLight, LOW);
     scriptErrorPaused = false;
+    digitalWrite(errorLight, LOW);
+    return true;
   }
   // put script into wait mode
   if (task == 'C') {
+    digitalWrite(goodLight, HIGH);
+    delay(200);
+    digitalWrite(goodLight, LOW);
     scriptWait = true;
+    return true;
   }
   // remove script from wait mode
   if (task == 'D') {
+    digitalWrite(goodLight, HIGH);
+    delay(200);
+    digitalWrite(goodLight, LOW);
     scriptWait = false;
+    return true;
   }
   // step motor x forward
   if (task == 'E') {
-    stepMotorXForward();
+    stepMotorXForward(false);
+    return true;
   }
   // step motor x backward
   if (task == 'F') {
-    stepMotorXBackward();
+    stepMotorXBackward(false);
+    return true;
   }
   // step motor z forward
   if (task == 'G') {
-    stepMotorZForward();
+    stepMotorZForward(false);
+    return true;
   }
   // step motor z backward
   if (task == 'H') {
-    stepMotorZBackward();
+    stepMotorZBackward(false);
+    return true;
   }
   // step motor x for steps unknown
   if (task == 'I') {
 
     // Get varibles for loop
     float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
-    int steps = atoi(taskInfo + 2);
+    int steps = atoi(taskInfo.substring(2).c_str());
 
     while (steps != 0) {
       // move steps number one step toward zero
       steps += (steps > 0 ? -1 : +1);
 
-      if (x >= 0) {
-        stepMotorXForward();
+      if (steps >= 0) {
+        stepMotorXForward(false);
       } else {
-        stepMotorXBackward();
+        stepMotorXBackward(false);
       }
 
-      delay(tempdelay)
+      delay(tempdelay);
     }
+    return true;
   }
   // step motor z for steps unknown
   if (task == 'J') {
-     // Get varibles for loop
+    // Get varibles for loop
     float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
-    int steps = atoi(taskInfo + 2);
+    int steps = atoi(taskInfo.substring(2).c_str());
 
     while (steps != 0) {
       // move steps number one step toward zero
       steps += (steps > 0 ? -1 : +1);
 
-      if (x >= 0) {
-        stepMotorZForward();
+      if (steps >= 0) {
+        stepMotorZForward(false);
       } else {
-        stepMotorZBackward();
+        stepMotorZBackward(false);
       }
 
-      delay(tempdelay)
+      delay(tempdelay);
     }
+    return true;
   }
   // hold all motor positions with force
   if (task == 'K') {
     holdMotorPositions();
+    return true;
   }
+  // Move motor X to specific step
   if (task == 'L') {
-  }
-  if (task == 'M') {
-  }
-  if (task == 'N') {
-  }
-}
+    // Get varibles for loop
+    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    int StepPosition = atoi(taskInfo.substring(2).c_str());
 
-void runCommands() {
+    if (StepPosition > 0 && StepPosition <= maxXStep) {
 
-  string nextCommand = "";
+      // When motor not at end step
+      while (motorStepPositionX != StepPosition) {
 
-  int startIndex = 0;
-  int endIndex = numCommands[currentCommandStringExecution].indexOf(';');
+        // Move motor closer to end step
+        if (motorStepPositionX >= 0) {
+          stepMotorXForward(false);
+        } else {
+          stepMotorXBackward(false);
+        }
 
-  // Loop through each semicolon-delimited token.
-  while (endIndex != -1) {
-
-    if (startIndex == currentCommandExecution) {}
-
-    // Extract substring from startIndex to endIndex (not including the semicolon)
-    String tempSection = input.substring(startIndex, endIndex);
-
-    // Process section if the section is non-empty.
-    if (tempSection.length() > 0) {
-
-      executeCommand(tempSection)
-    }
-
-    if (currentCommandExecution + 1 > endIndex) {
-
-      currentCommandStringExecution += 1;
-      currentCommandExecution = 1;
+        delay(tempdelay);
+      }
+      return true;
 
     } else {
-
-      currentCommandExecution += 1;
+      msgForAttemptSendOverSerial = "ERROR motor X OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxXStep) + ")";
+      return false;
     }
   }
-  // Update startIndex to the character after the current semicolon.
-  startIndex = endIndex + 1;
-  endIndex = input.indexOf(';', startIndex);
+  // Move motor Z to specific step
+  if (task == 'M') {
+    // Get varibles for loop
+    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    int StepPosition = atoi(taskInfo.substring(2).c_str());
+
+    if (StepPosition > 0 && StepPosition <= maxZStep) {
+
+      // When motor not at end step
+      while (motorStepPositionZ != StepPosition) {
+
+        // Move motor closer to end step
+        if (motorStepPositionZ >= 0) {
+          stepMotorZForward(false);
+        } else {
+          stepMotorZBackward(false);
+        }
+
+        delay(tempdelay);
+      }
+      return true;
+
+    } else {
+      msgForAttemptSendOverSerial = "ERROR motor Z OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxZStep) + ")";
+      return false;
+    }
+  }
+  if (task == 'N') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
 }
+
+// Able to execute next command in a string of commands
+String getNextSection(String input) {
+  int sectionNumber = 1;
+  int start = 0;
+  int end = input.indexOf(';');
+
+  while (end != -1) {
+    if (sectionNumber == lastCompleateCommandExecution + 1) {
+      return input.substring(start, end);
+    }
+    sectionNumber++;
+    start = end + 1;
+    end = input.indexOf(';', start);
+  }
+
+  return "";
+}
+
+// Execute saved commands
+void runCommands() {
+
+  String input = commands[currentCommandStringExecution];
+  String nextCommand = getNextSection(input);
+
+  // If next command in string
+  if (nextCommand) {
+    // Run command, if succcess continue
+    if (executeCommand(nextCommand) == true) {
+      lastCompleateCommandStringExecution = currentCommandStringExecution;
+      lastCompleateCommandExecution = currentCommandExecution;
+      currentCommandExecution += 1;
+    } else {
+      scriptErrorPaused = true;
+      digitalWrite(errorLight, HIGH);
+    }
+  } else {
+
+    // Clear last string we compleated and executed
+    commands[currentCommandStringExecution - 1] = "";
+    for (int i = 0; i < numCommands; i++) {
+      if (commands[i].length() == 0) continue;  // Skip empty strings
+
+      int semicolonIndex = commands[i].indexOf(';');
+      if (semicolonIndex == -1) continue;  // Skip malformed strings
+
+      String numberPart = commands[i].substring(0, semicolonIndex);
+      int commandNum = numberPart.toInt();
+
+      // New data found, set up for execution
+      if (commandNum == currentCommandNumber + 1) {
+
+        currentCommandStringExecution = i;
+        currentCommandExecution = 0;
+        currentCommandNumber += 1;
+      }
+    }
+  }
 }
 
 // Set up script
 void setup() {
 
-  Serial1.begin(9600);  // Initialize Serial1 (TX1/RX1) at 9600 baud
+  // Set control X pins as outputs
+  pinMode(IN1X, OUTPUT);
+  pinMode(IN2X, OUTPUT);
+  pinMode(IN3X, OUTPUT);
+  pinMode(IN4X, OUTPUT);
+  pinMode(ENABLE_PINX, OUTPUT);
+  pinMode(PressureLever_ReadX, INPUT);
 
-  // Set control pins as outputs
+  // ==============================
+
+  // Set control Z pins as outputs
   pinMode(IN1Z, OUTPUT);
   pinMode(IN2Z, OUTPUT);
   pinMode(IN3Z, OUTPUT);
@@ -480,28 +662,25 @@ void setup() {
 
   // ==============================
 
-  pinMode(IN1X, OUTPUT);
-  pinMode(IN2X, OUTPUT);
-  pinMode(IN3X, OUTPUT);
-  pinMode(IN4X, OUTPUT);
-  pinMode(ENABLE_PINX, OUTPUT);
-  pinMode(PressureLever_ReadX, INPUT);
+  // Initialize Serial1 (TX1/RX1) at 9600 baud
+  Serial1.begin(9600);
+
+  // Set light pins as outputs
+  pinMode(goodLight, OUTPUT);
+  pinMode(dataLight, OUTPUT);
+  pinMode(errorLight, OUTPUT);
 
   // Find and home motor positions
   homeStepperMotorsPositions();
-
-  checkCommunication();
 }
 
-// Ongoing script
+// Ongoing loop
 void loop() {
 
-  if (scriptErrorPaused) {
+  checkCommunication();
 
-    checkCommunication();
-
+  if (scriptErrorPaused || scriptWait) {
   } else {
-
-    runCommands()
+    runCommands();
   }
 }
