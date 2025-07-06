@@ -128,93 +128,6 @@ String msgForAttemptSendOverSerial = "Running";
 
 // ==============================
 
-// Send bulk data
-void sendData() {
-  if (millis() > lastDataSend + 6000) {
-    Serial1.println("U" + String(!scriptErrorPaused) + ";E;E;" + String(stepDelayZ) + ";");
-
-    lastDataSend = millis();
-
-    digitalWrite(dataLight, HIGH);
-    delay(200);
-    digitalWrite(dataLight, LOW);
-  }
-}
-
-// Serial to arudnio wifi
-void checkCommunication() {
-
-  // Alert sending ardunio
-  Serial1.println("AAreadAA");
-
-  // Wait briefly for a response
-  unsigned long startWait = millis();
-  while (!Serial1.available() && millis() - startWait < 50) {
-    delay(1);
-  }
-
-  // Check if the other Arduino is sending a message
-  if (Serial1.available() > 0) {
-
-    String recivedMessage = Serial1.readStringUntil('\n');  // Read incoming message
-    lastDataReceive = millis();
-
-    digitalWrite(dataLight, HIGH);
-    delay(200);
-    digitalWrite(dataLight, LOW);
-
-    // Set up script to run new message immediately
-    if (recivedMessage.length() > 0 && recivedMessage[0] == 'I') {
-
-      // Cut off protocal data
-      recivedMessage = recivedMessage.substring(1);
-
-      // Run command, if succcess continue
-      if (executeCommand(nextCommand) == false) {
-        scriptErrorPaused = true;
-        digitalWrite(errorLight, HIGH);
-      }
-
-      // Save data to run later
-    } else if (recivedMessage.length() > 0 && recivedMessage[0] == 'S') {
-
-      // Cut off protocal data
-      recivedMessage = recivedMessage.substring(1);
-
-      // Loop to find empty slot to save data
-      for (int i = 0; i < numCommands; i++) {
-        // Check if the current command is empty
-        if (commands[i].length() == 0) {
-          commands[i] = recivedMessage;
-          recivedMessage = "";
-          break;
-        }
-      }
-
-      if (recivedMessage.length() > 1) {
-        msgForAttemptSendOverSerial = "ERROR command storage full";
-      }
-    }
-
-    recivedMessage = recivedMessage.substring(1);  // Ignore first character
-  }
-
-  // 2. If no incoming message, send message if "msgForAttemptSendOverSerial" is not empty
-  if (msgForAttemptSendOverSerial.length() > 0) {
-
-    digitalWrite(dataLight, HIGH);
-    delay(200);
-    digitalWrite(dataLight, LOW);
-
-    Serial1.println("O" + msgForAttemptSendOverSerial);  // Send the message
-    msgForAttemptSendOverSerial = "";                    // Clear the message after sending
-    lastDataSend = millis();
-  } else {
-
-    sendData();  // Attempt to update ardunio cloud (send data to wifi ardunio)
-  }
-}
-
 // Function to energize X stepper motor coils
 bool stepMotorX(int step, bool ignoreBounds) {
 
@@ -236,10 +149,12 @@ bool stepMotorX(int step, bool ignoreBounds) {
   }
 
   // Move physical motor
+  digitalWrite(ENABLE_PINX, HIGH);
   digitalWrite(IN1X, steps[step][0]);
   digitalWrite(IN2X, steps[step][1]);
   digitalWrite(IN3X, steps[step][2]);
   digitalWrite(IN4X, steps[step][3]);
+  digitalWrite(ENABLE_PINX, LOW);
 
   // Last X move
   lastStepX = step;
@@ -281,10 +196,12 @@ bool stepMotorZ(int step, bool ignoreBounds) {
   }
 
   // Move physical motor
+  digitalWrite(ENABLE_PINZ, HIGH);
   digitalWrite(IN1Z, steps[step][0]);
   digitalWrite(IN2Z, steps[step][1]);
   digitalWrite(IN3Z, steps[step][2]);
   digitalWrite(IN4Z, steps[step][3]);
+  digitalWrite(ENABLE_PINZ, LOW);
 
   // Last Z move
   lastStepZ = step;
@@ -574,7 +491,55 @@ bool executeCommand(String givenString) {
       return false;
     }
   }
+  // Ping back to server
   if (task == 'N') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  // move X and Z motor
+  if (task == 'O') {
+    // fill in later
+    return true;
+  }
+  // Rotate Y motor
+  if (task == 'P') {
+    // fill in later
+    return true;
+  }
+  // Move up and down Y motor
+  if (task == 'Q') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'R') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'S') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'T') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'U') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'W') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'X') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'Y') {
+    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    return true;
+  }
+  if (task == 'Z') {
     msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
     return true;
   }
@@ -636,6 +601,87 @@ void runCommands() {
         currentCommandNumber += 1;
       }
     }
+  }
+}
+
+// Send bulk data
+void sendData() {
+  if (millis() > lastDataSend + 6000) {
+    Serial1.println("U" + String(!scriptErrorPaused) + ";E;E;" + String(stepDelayZ) + ";");
+
+    lastDataSend = millis();
+  }
+}
+
+// Serial to arudnio wifi
+void checkCommunication() {
+
+  // Alert sending ardunio
+  Serial1.println("AAreadAA");
+
+  // Wait briefly for a response
+  unsigned long startWait = millis();
+  while (!Serial1.available() && millis() - startWait < 50) {
+    delay(1);
+  }
+
+  if (Serial1.available()) {
+    String recivedMessage = Serial1.readStringUntil('\n');  // Read incoming message
+    lastDataReceive = millis();
+
+    digitalWrite(dataLight, HIGH);
+    delay(200);
+    digitalWrite(dataLight, LOW);
+
+    // Set up script to run new message immediately
+    if (recivedMessage.length() > 0 && recivedMessage[0] == 'I') {
+
+      // Cut off protocal data
+      recivedMessage = recivedMessage.substring(1);
+
+      // Run command, if succcess continue
+      if (executeCommand(recivedMessage) == false) {
+        scriptErrorPaused = true;
+        digitalWrite(errorLight, HIGH);
+      }
+
+      // Save data to run later
+    } else if (recivedMessage.length() > 0 && recivedMessage[0] == 'S') {
+
+      // Cut off protocal data
+      recivedMessage = recivedMessage.substring(1);
+
+      // Loop to find empty slot to save data
+      for (int i = 0; i < numCommands; i++) {
+        // Check if the current command is empty
+        if (commands[i].length() == 0) {
+          commands[i] = recivedMessage;
+          recivedMessage = "";
+          break;
+        }
+      }
+
+      if (recivedMessage.length() > 1) {
+        msgForAttemptSendOverSerial = "ERROR command storage full";
+      }
+    }
+
+    recivedMessage = recivedMessage.substring(1);  // Ignore first character
+  }
+
+  // 2. If no incoming message, send message if "msgForAttemptSendOverSerial" is not empty
+  if (msgForAttemptSendOverSerial.length() > 0) {
+
+    digitalWrite(dataLight, HIGH);
+    delay(200);
+    digitalWrite(dataLight, LOW);
+
+    Serial1.println("O" + msgForAttemptSendOverSerial);  // Send the message
+    msgForAttemptSendOverSerial = "";                    // Clear the message after sending
+    lastDataSend = millis();
+  } else {
+
+    sendData();  // Attempt to update ardunio cloud (send data to wifi ardunio)
   }
 }
 
