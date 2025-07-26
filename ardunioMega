@@ -7,11 +7,29 @@
 
 // ==============================
 
+// Communication
+const int commLedPin = 3;
+bool handshakeDone = false;
+unsigned long lastPingTime = 0;
+const unsigned long PING_INTERVAL = 2000;  // ms
+
+enum CommState { C_IDLE,
+                 C_WAITING_ACK,
+                 C_SENDING_DATA };
+CommState commState = C_IDLE;
+unsigned long commTimer = 0;
+unsigned long lastCommTime    = 0;       // when we last saw any traffic (in or out)
+const unsigned long COMM_ACK_TIMEOUT = 200;  // abort if no response
+
 // Is script error paused
 bool scriptErrorPaused = false;
 
 // Is script delayed and waiting for input
 bool scriptWait = false;
+
+bool heatSinkFansRunning = false;
+unsigned long lastFanChange = 0;
+
 
 // Last sending out of data in miliseconds
 int lastDataSend = 0;
@@ -24,9 +42,8 @@ const float minStepDelay = 2.5;
 const int maxStepDelay = 8;
 
 // Direct color indicators pins
-
 const int goodLight = 51;
-const int dataLight = 52;
+const int commLight = 52;
 const int errorLight = 53;
 
 // ==============================
@@ -120,13 +137,53 @@ int lastCompleateCommandExecution = -1;
 
 // Next Executing Info
 int currentCommandNumber = 1;
-int currentCommandStringExecution = 0;
-int currentCommandExecution = 0;
+int currentCommandStringExecution = 00000;
+int currentCommandExecution = 00;
 
 // String to send out to cloud
 String msgForAttemptSendOverSerial = "Running";
 
 // ==============================
+
+String decimalToBase36(unsigned long number) {
+  const char* chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  String result = "";
+
+  if (number == 0) return "00000";
+
+  while (number > 0) {
+    result = chars[number % 36] + result;
+    number /= 36;
+  }
+
+  // Pad to 5 characters
+  while (result.length() < 5) {
+    result = "0" + result;
+  }
+
+  return result;
+}
+
+unsigned long base36ToDecimal(String input) {
+  input.toLowerCase();
+  const char* chars = "0123456789abcdefghijklmnopqrstuvwxyz";
+  unsigned long result = 0;
+
+  for (int i = 0; i < input.length(); ++i) {
+    char c = input.charAt(i);
+    const char* pos = strchr(chars, c);
+
+    if (pos == nullptr) {
+      // Invalid character; handle it how you want (return 0, error code, etc.)
+      return 0;
+    }
+
+    int value = pos - chars;
+    result = result * 36 + value;
+  }
+
+  return result;
+}
 
 // Function to energize X stepper motor coils
 bool stepMotorX(int step, bool ignoreBounds) {
@@ -498,7 +555,49 @@ bool executeCommand(String givenString) {
   }
   // move X and Z motor
   if (task == 'O') {
-    // fill in later
+    // --- assume taskInfo is exactly two back-to-back segments ---
+    int len = taskInfo.length();
+    int half = len / 2;
+
+    // split in two equal parts
+    String xSeg = taskInfo.substring(0, half);
+    String zSeg = taskInfo.substring(half);
+
+    // parse X
+    float xDelay = (xSeg[0] - '0') + (xSeg[1] - '0') * 0.1f;
+    int xSteps = xSeg.substring(2).toInt();
+
+    // parse Z
+    float zDelay = (zSeg[0] - '0') + (zSeg[1] - '0') * 0.1f;
+    int zSteps = zSeg.substring(2).toInt();
+
+    // “parallel” blocking loop
+    unsigned long nextX = millis();
+    unsigned long nextZ = nextX;
+    int remX = abs(xSteps), remZ = abs(zSteps);
+    int dirX = (xSteps >= 0 ? +1 : -1);
+    int dirZ = (zSteps >= 0 ? +1 : -1);
+
+    while (remX > 0 || remZ > 0) {
+      unsigned long now = millis();
+
+      if (remX > 0 && now >= nextX) {
+        if (dirX > 0) stepMotorXForward(false);
+        else stepMotorXBackward(false);
+        remX--;
+        nextX = now + (unsigned long)xDelay;
+      }
+
+      if (remZ > 0 && now >= nextZ) {
+        if (dirZ > 0) stepMotorZForward(false);
+        else stepMotorZBackward(false);
+        remZ--;
+        nextZ = now + (unsigned long)zDelay;
+      }
+
+      delay(1);
+    }
+
     return true;
   }
   // Rotate Y motor
@@ -508,11 +607,12 @@ bool executeCommand(String givenString) {
   }
   // Move up and down Y motor
   if (task == 'Q') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+   
     return true;
   }
+    // Move up and down Y motor
   if (task == 'R') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    
     return true;
   }
   if (task == 'S') {
@@ -606,83 +706,85 @@ void runCommands() {
 
 // Send bulk data
 void sendData() {
-  if (millis() > lastDataSend + 6000) {
-    Serial1.println("U" + String(!scriptErrorPaused) + ";E;E;" + String(stepDelayZ) + ";");
+  if (millis() > lastDataSend + PING_INTERVAL) {
+    // script error paused Boolean 1 true 0 false
+    // script wait paused Boolean 1 true 0 false
+    // X leaver triggerd Boolean 1 true 0 false
+    // X steps from 0
+    // X steps total
+    // Z leaver triggerd Boolean 1 true 0 false
+    // Z steps from 0
+    // Z steps total
+    // Last command executed 7 digits 5-2
+    volatile int motorStepPositionZ = 0;
+volatile int motorStepCompleationZ = 0;
+    String payload = "D" + String(scriptErrorPaused) + ";" + String(scriptWait) + ";" + String(digitalRead(PressureLever_ReadX)) + ";" + motorStepPositionX + ";" + motorStepCompleationX + ";" + String(digitalRead(PressureLever_ReadZ)) + ";" + motorStepPositionZ + ";" + motorStepCompleationZ + ";" + lastCompleateCommandStringExecution + lastCompleateCommandExecution;
+    Serial1.println(payload);
 
-    lastDataSend = millis();
+    lastDataSend   = millis();
+    lastCommTime   = millis();
   }
 }
 
-// Serial to arudnio wifi
 void checkCommunication() {
-
-  // Alert sending ardunio
-  Serial1.println("AAreadAA");
-
-  // Wait briefly for a response
-  unsigned long startWait = millis();
-  while (!Serial1.available() && millis() - startWait < 50) {
-    delay(1);
-  }
-
+  // — 1) Read & respond to anything incoming
   if (Serial1.available()) {
-    String recivedMessage = Serial1.readStringUntil('\n');  // Read incoming message
-    lastDataReceive = millis();
+    String in = Serial1.readStringUntil('\n');
+    in.trim();
+    lastCommTime = millis();      // mark that we saw traffic
 
-    digitalWrite(dataLight, HIGH);
-    delay(200);
-    digitalWrite(dataLight, LOW);
-
-    // Set up script to run new message immediately
-    if (recivedMessage.length() > 0 && recivedMessage[0] == 'I') {
-
-      // Cut off protocal data
-      recivedMessage = recivedMessage.substring(1);
-
-      // Run command, if succcess continue
-      if (executeCommand(recivedMessage) == false) {
-        scriptErrorPaused = true;
-        digitalWrite(errorLight, HIGH);
-      }
-
-      // Save data to run later
-    } else if (recivedMessage.length() > 0 && recivedMessage[0] == 'S') {
-
-      // Cut off protocal data
-      recivedMessage = recivedMessage.substring(1);
-
-      // Loop to find empty slot to save data
-      for (int i = 0; i < numCommands; i++) {
-        // Check if the current command is empty
-        if (commands[i].length() == 0) {
-          commands[i] = recivedMessage;
-          recivedMessage = "";
-          break;
+    if (in == "AAreadAA") {
+      // always echo a ping, even if already handshaken
+      Serial1.println("AAreadAA");
+      handshakeDone = true;
+      digitalWrite(commLight, LOW);
+    }
+    else {
+      // real data frame—handle it here
+      if (in.startsWith("I")) {
+        if (!executeCommand(in.substring(1))) {
+          scriptErrorPaused = true;
+          digitalWrite(errorLight, HIGH);
         }
       }
-
-      if (recivedMessage.length() > 1) {
-        msgForAttemptSendOverSerial = "ERROR command storage full";
+      // Save data to run in order
+      else if (in.startsWith("S")) {
+        // your “store command” logic…
+        String body = in.substring(1);
+        bool stored = false;
+        for (int i = 0; i < numCommands; i++) {
+          if (commands[i].length() == 0) {
+            commands[i] = body;
+            stored = true;
+            break;
+          }
+        }
+        if (!stored) {
+          msgForAttemptSendOverSerial = "ERROR command storage full";
+        }
       }
+      // …any other incoming types…
     }
-
-    recivedMessage = recivedMessage.substring(1);  // Ignore first character
   }
 
-  // 2. If no incoming message, send message if "msgForAttemptSendOverSerial" is not empty
-  if (msgForAttemptSendOverSerial.length() > 0) {
-
-    digitalWrite(dataLight, HIGH);
-    delay(200);
-    digitalWrite(dataLight, LOW);
-
-    Serial1.println("O" + msgForAttemptSendOverSerial);  // Send the message
-    msgForAttemptSendOverSerial = "";                    // Clear the message after sending
-    lastDataSend = millis();
-  } else {
-
-    sendData();  // Attempt to update ardunio cloud (send data to wifi ardunio)
+  // — 2) If not yet handshaken, keep pinging
+  if (!handshakeDone) {
+    if (millis() - lastPingTime >= PING_INTERVAL) {
+      Serial1.println("AAreadAA");
+      lastPingTime = millis();
+    }
+    return;  // wait here until we get their “AAreadAA” reply
   }
+
+  // — 3) If we *were* handshaken, but it’s been too quiet, force re-handshake
+  if (millis() - lastCommTime >= PING_INTERVAL * 5) {
+    handshakeDone    = false;
+    digitalWrite(commLight, HIGH);
+    return;  // drop back into the “not handshaken” logic
+  }
+
+  // — 4) Once handshaken, send your periodic bulk data
+  sendData();
 }
 
 // Set up script
@@ -708,25 +810,29 @@ void setup() {
 
   // ==============================
 
-  // Initialize Serial1 (TX1/RX1) at 9600 baud
+  // Initialize Serial1 (TX1/RX1) at 9600 baud for ardunio to ardunio communication
   Serial1.begin(9600);
 
   // Set light pins as outputs
   pinMode(goodLight, OUTPUT);
-  pinMode(dataLight, OUTPUT);
+  pinMode(commLight, OUTPUT);
   pinMode(errorLight, OUTPUT);
+
+  // Until comm connected error light is on
+  digitalWrite(commLight, HIGH);
 
   // Find and home motor positions
   homeStepperMotorsPositions();
 }
 
-// Ongoing loop
+
 void loop() {
 
+  // process incoming packets & queued bulk updates
   checkCommunication();
 
-  if (scriptErrorPaused || scriptWait) {
-  } else {
+  // Run commands if posible
+  if (!scriptErrorPaused && !scriptWait) {
     runCommands();
   }
 }
