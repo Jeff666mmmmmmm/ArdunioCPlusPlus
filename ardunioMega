@@ -8,17 +8,18 @@
 // ==============================
 
 // Communication
-const int commLedPin = 3;
 bool handshakeDone = false;
 unsigned long lastPingTime = 0;
-const unsigned long PING_INTERVAL = 2000;  // ms
+const unsigned long PING_INTERVAL = 800;
+const unsigned long Imporntant_Ping_Delay = 2500;
+int Last_Imporntant_Ping_Delay = 0;
 
 enum CommState { C_IDLE,
                  C_WAITING_ACK,
                  C_SENDING_DATA };
 CommState commState = C_IDLE;
 unsigned long commTimer = 0;
-unsigned long lastCommTime    = 0;       // when we last saw any traffic (in or out)
+unsigned long lastCommTime = 0;              // when we last saw any traffic (in or out)
 const unsigned long COMM_ACK_TIMEOUT = 200;  // abort if no response
 
 // Is script error paused
@@ -46,6 +47,12 @@ const int goodLight = 51;
 const int commLight = 52;
 const int errorLight = 53;
 
+// Motor enable pin
+const int ENABLE_PIN_MOTOR = 22;
+
+// Fan enable pin
+const int ENABLE_PIN_FAN = 47;
+
 // ==============================
 
 // X H-bridge pins
@@ -53,9 +60,6 @@ const int IN1X = 25;
 const int IN2X = 27;
 const int IN3X = 29;
 const int IN4X = 31;
-
-// X motor enable pin
-const int ENABLE_PINX = 23;
 
 // PressureLeaver activated read at pos 0
 const int PressureLever_ReadX = 35;
@@ -84,9 +88,6 @@ const int IN1Z = 24;
 const int IN2Z = 26;
 const int IN3Z = 28;
 const int IN4Z = 30;
-
-// Z motor enable pin
-const int ENABLE_PINZ = 22;
 
 // PressureLeaver activated read at pos 0
 const int PressureLever_ReadZ = 34;
@@ -123,6 +124,10 @@ const int steps[4][4] = {
 // Data to run immediately
 String commandNow = "";
 
+unsigned long lastPayloadRequestTime = 0;
+String lastPayloadRequested = "";  // avoid duplicate requests
+
+
 // Save data from server to execute later in order
 
 // Define the number of executable commands
@@ -132,8 +137,8 @@ const int numCommands = 12;
 String commands[numCommands];
 
 // Last executing info
-int lastCompleateCommandStringExecution = -1;
-int lastCompleateCommandExecution = -1;
+int lastCompleateCommandStringExecution = 0;
+int lastCompleateCommandExecution = 0;
 
 // Next Executing Info
 int currentCommandNumber = 1;
@@ -141,7 +146,8 @@ int currentCommandStringExecution = 00000;
 int currentCommandExecution = 00;
 
 // String to send out to cloud
-String msgForAttemptSendOverSerial = "Running";
+String msgForAttemptSendOverSerial = "SRunning";
+int lastMessageSentUniqueID = 0;
 
 // ==============================
 
@@ -206,12 +212,10 @@ bool stepMotorX(int step, bool ignoreBounds) {
   }
 
   // Move physical motor
-  digitalWrite(ENABLE_PINX, HIGH);
   digitalWrite(IN1X, steps[step][0]);
   digitalWrite(IN2X, steps[step][1]);
   digitalWrite(IN3X, steps[step][2]);
   digitalWrite(IN4X, steps[step][3]);
-  digitalWrite(ENABLE_PINX, LOW);
 
   // Last X move
   lastStepX = step;
@@ -222,14 +226,14 @@ bool stepMotorX(int step, bool ignoreBounds) {
   return true;
 }
 
-void stepMotorXForward(bool ignoreBounds) {
+bool stepMotorXForward(bool ignoreBounds) {
   int nextStep = (lastStepX + 1) % 4;
-  stepMotorX(nextStep, ignoreBounds);
+  return stepMotorX(nextStep, ignoreBounds);
 }
 
-void stepMotorXBackward(bool ignoreBounds) {
+bool stepMotorXBackward(bool ignoreBounds) {
   int nextStep = (lastStepX + 3) % 4;
-  stepMotorX(nextStep, ignoreBounds);
+  return stepMotorX(nextStep, ignoreBounds);
 }
 
 // Function to energize Z stepper motor coils
@@ -253,12 +257,10 @@ bool stepMotorZ(int step, bool ignoreBounds) {
   }
 
   // Move physical motor
-  digitalWrite(ENABLE_PINZ, HIGH);
   digitalWrite(IN1Z, steps[step][0]);
   digitalWrite(IN2Z, steps[step][1]);
   digitalWrite(IN3Z, steps[step][2]);
   digitalWrite(IN4Z, steps[step][3]);
-  digitalWrite(ENABLE_PINZ, LOW);
 
   // Last Z move
   lastStepZ = step;
@@ -269,132 +271,73 @@ bool stepMotorZ(int step, bool ignoreBounds) {
   return true;
 }
 
-void stepMotorZForward(bool ignoreBounds) {
+bool stepMotorZForward(bool ignoreBounds) {
   int nextStep = (lastStepZ + 1) % 4;
-  stepMotorZ(nextStep, ignoreBounds);
+  return stepMotorZ(nextStep, ignoreBounds);
 }
 
-void stepMotorZBackward(bool ignoreBounds) {
+bool stepMotorZBackward(bool ignoreBounds) {
   int nextStep = (lastStepZ + 3) % 4;
-  stepMotorZ(nextStep, ignoreBounds);
+  return stepMotorZ(nextStep, ignoreBounds);
 }
 
-// Hold X motor
-void stepMotorXHold(bool run) {
+// Hold Motors
+void stepMotorsActivated(bool run) {
+
   unsigned long currentMillis = millis();  // Get the current time
 
   // Update uptime or downtime based on the motor state
   if (run) {
+    digitalWrite(ENABLE_PIN_MOTOR, HIGH);
+    digitalWrite(ENABLE_PIN_FAN, HIGH);
     motorUptimeX += currentMillis - lastMilisecX;  // Increment uptime
-    digitalWrite(ENABLE_PINX, HIGH);               // Turn motor on
   } else {
+    digitalWrite(ENABLE_PIN_MOTOR, LOW);
+    digitalWrite(ENABLE_PIN_FAN, LOW);
     motorDowntimeX += currentMillis - lastMilisecX;  // Increment downtime
-    digitalWrite(ENABLE_PINX, LOW);                  // Turn motor off
   }
 
   // Update lastMillis to the current time
   lastMilisecX = currentMillis;
 }
 
-// Hold Z motor
-void stepMotorZHold(bool run) {
-  unsigned long currentMillis = millis();  // Get the current time
-
-  // Update uptime or downtime based on the motor state
-  if (run) {
-    motorUptimeZ += currentMillis - lastMilisecZ;  // Increment uptime
-    digitalWrite(ENABLE_PINZ, HIGH);               // Turn motor on
-  } else {
-    motorDowntimeZ += currentMillis - lastMilisecZ;  // Increment downtime
-    digitalWrite(ENABLE_PINZ, LOW);                  // Turn motor off
-  }
-
-  // Update lastMillis to the current time
-  lastMilisecZ = currentMillis;
-}
-
-// Hold motor positions with force
-void holdMotorPositions() {
-  stepMotorXHold(true);
-  stepMotorZHold(true);
-}
-
 // Set All Motor Positions to 0
 void homeStepperMotorsPositions() {
+  // Ensure motor is powered
+  stepMotorsActivated(true);
 
-  // Motor Z Homing Routine
-  stepDelayZ = 4.5;
-  int motorHomeCompleationZ = 0;
-  int stepsToLeverZ = 0;
-  int stepsFromLeverZ = 0;
-  int stepsReturnLeverZ = 0;
+  stepDelayZ = 5; // reasonable speed
+  motorStepPositionZ = 0;
 
-  // Step to until lever is hit (HIGH)
-  for (int i = 0; i < 5000; i++) {
+  int maxSeekSteps = 6000;
+
+  // Step Z forward until limit switch is triggered
+  for (int i = 0; i < maxSeekSteps; i++) {
     stepMotorZForward(true);
     delay(stepDelayZ);
 
-    // Is motor touched switch
     if (digitalRead(PressureLever_ReadZ) == HIGH) {
-      motorHomeCompleationZ += 1;
-      stepsToLeverZ = i;
-      stepDelayZ = 6;
-
-      // Step until lever is released (LOW)
-      delay(500);
-      for (int j = 1500; j > 0; j--) {
-        stepMotorZBackward(true);
-        delay(stepDelayZ);
-
-        // Is motor backed away from switch
-        if (digitalRead(PressureLever_ReadZ) == LOW) {
-          motorHomeCompleationZ += 1;
-          stepsFromLeverZ = j;
-
-          // Step to until lever is hit again (HIGH)
-          delay(500);
-          for (int k = 0; k < 1500; k++) {
-            stepMotorZForward(true);
-            delay(stepDelayZ);
-
-            // Is motor back onto the switch
-            if (digitalRead(PressureLever_ReadZ) == HIGH) {
-              motorHomeCompleationZ += 1;
-              stepsReturnLeverZ = k;
-              motorStepPositionZ = 0;
-              break;
-            }
-          }
-          break;
-        }
-      }
-      break;
+      motorStepPositionZ = 0;
+      msgForAttemptSendOverSerial = "SHomed Z at step " + String(i);
+      return;
     }
   }
 
-  lastStepZ = 0;
-
-  // Check if motor home worked
-  if (motorHomeCompleationZ != 3) {
-
-    msgForAttemptSendOverSerial = "ERROR HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
-    scriptErrorPaused = true;
-    digitalWrite(errorLight, HIGH);
-  } else {
-    msgForAttemptSendOverSerial = "Success HomMotor Z(" + String(stepsToLeverZ) + "/" + String(stepsFromLeverZ) + "/" + String(stepsFromLeverZ) + ")";
-  }
+  // If we reach here, homing failed
+  msgForAttemptSendOverSerial = "EFailed to home Z";
+  scriptErrorPaused = true;
+  digitalWrite(errorLight, HIGH);
 }
 
-// Execute indviual command
+// Execute individual command
 bool executeCommand(String givenString) {
-
   // Task of command
   char task = givenString[0];
 
-  // info for task to be executed, if any
+  // Info for task to be executed, if any
   String taskInfo = givenString.substring(1);
 
-  // pause script due to error
+  // Pause script due to error
   if (task == 'A') {
     digitalWrite(goodLight, HIGH);
     delay(200);
@@ -403,7 +346,8 @@ bool executeCommand(String givenString) {
     digitalWrite(errorLight, HIGH);
     return true;
   }
-  // unpasue script due to error
+
+  // Unpause script due to error
   if (task == 'B') {
     digitalWrite(goodLight, HIGH);
     delay(200);
@@ -412,7 +356,8 @@ bool executeCommand(String givenString) {
     digitalWrite(errorLight, LOW);
     return true;
   }
-  // put script into wait mode
+
+  // Put script into wait mode
   if (task == 'C') {
     digitalWrite(goodLight, HIGH);
     delay(200);
@@ -420,7 +365,8 @@ bool executeCommand(String givenString) {
     scriptWait = true;
     return true;
   }
-  // remove script from wait mode
+
+  // Remove script from wait mode
   if (task == 'D') {
     digitalWrite(goodLight, HIGH);
     delay(200);
@@ -428,150 +374,118 @@ bool executeCommand(String givenString) {
     scriptWait = false;
     return true;
   }
-  // step motor x forward
-  if (task == 'E') {
-    stepMotorXForward(false);
-    return true;
-  }
-  // step motor x backward
-  if (task == 'F') {
-    stepMotorXBackward(false);
-    return true;
-  }
-  // step motor z forward
-  if (task == 'G') {
-    stepMotorZForward(false);
-    return true;
-  }
-  // step motor z backward
-  if (task == 'H') {
-    stepMotorZBackward(false);
-    return true;
-  }
-  // step motor x for steps unknown
+
+  // Step motor X forward
+  if (task == 'E') return stepMotorXForward(false);
+  // Step motor X backward
+  if (task == 'F') return stepMotorXBackward(false);
+  // Step motor Z forward
+  if (task == 'G') return stepMotorZForward(false);
+  // Step motor Z backward
+  if (task == 'H') return stepMotorZBackward(false);
+
+  // Step motor X by relative step count
   if (task == 'I') {
-
-    // Get varibles for loop
-    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    float tempdelay = taskInfo.substring(0, 2).toFloat();
     int steps = atoi(taskInfo.substring(2).c_str());
 
     while (steps != 0) {
-      // move steps number one step toward zero
-      steps += (steps > 0 ? -1 : +1);
-
-      if (steps >= 0) {
-        stepMotorXForward(false);
+      if (steps > 0) {
+        if (!stepMotorXForward(false)) return false;
+        steps--;
       } else {
-        stepMotorXBackward(false);
+        if (!stepMotorXBackward(false)) return false;
+        steps++;
       }
-
       delay(tempdelay);
     }
     return true;
   }
-  // step motor z for steps unknown
+
+  // Step motor Z by relative step count
   if (task == 'J') {
-    // Get varibles for loop
-    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    float tempdelay = taskInfo.substring(0, 2).toFloat();
     int steps = atoi(taskInfo.substring(2).c_str());
 
     while (steps != 0) {
-      // move steps number one step toward zero
-      steps += (steps > 0 ? -1 : +1);
-
-      if (steps >= 0) {
-        stepMotorZForward(false);
+      if (steps > 0) {
+        if (!stepMotorZForward(false)) return false;
+        steps--;
       } else {
-        stepMotorZBackward(false);
+        if (!stepMotorZBackward(false)) return false;
+        steps++;
       }
-
       delay(tempdelay);
     }
     return true;
   }
-  // hold all motor positions with force
+
+  // Hold all motor positions with force
   if (task == 'K') {
-    holdMotorPositions();
+    stepMotorsActivated(true);
     return true;
   }
+
   // Move motor X to specific step
   if (task == 'L') {
-    // Get varibles for loop
-    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    float tempdelay = taskInfo.substring(0, 2).toFloat();
     int StepPosition = atoi(taskInfo.substring(2).c_str());
 
-    if (StepPosition > 0 && StepPosition <= maxXStep) {
-
-      // When motor not at end step
+    if (StepPosition >= 0 && StepPosition <= maxXStep) {
       while (motorStepPositionX != StepPosition) {
-
-        // Move motor closer to end step
-        if (motorStepPositionX >= 0) {
-          stepMotorXForward(false);
+        if (motorStepPositionX < StepPosition) {
+          if (!stepMotorXForward(false)) return false;
         } else {
-          stepMotorXBackward(false);
+          if (!stepMotorXBackward(false)) return false;
         }
-
         delay(tempdelay);
       }
       return true;
-
     } else {
-      msgForAttemptSendOverSerial = "ERROR motor X OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxXStep) + ")";
+      msgForAttemptSendOverSerial = "EMotor X OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxXStep) + ")";
       return false;
     }
   }
+
   // Move motor Z to specific step
   if (task == 'M') {
-    // Get varibles for loop
-    float tempdelay = (taskInfo[0] - '0') + (taskInfo[1] - '0') * 0.1;
+    float tempdelay = taskInfo.substring(0, 2).toFloat();
     int StepPosition = atoi(taskInfo.substring(2).c_str());
 
-    if (StepPosition > 0 && StepPosition <= maxZStep) {
-
-      // When motor not at end step
+    if (StepPosition >= 0 && StepPosition <= maxZStep) {
       while (motorStepPositionZ != StepPosition) {
-
-        // Move motor closer to end step
-        if (motorStepPositionZ >= 0) {
-          stepMotorZForward(false);
+        if (motorStepPositionZ < StepPosition) {
+          if (!stepMotorZForward(false)) return false;
         } else {
-          stepMotorZBackward(false);
+          if (!stepMotorZBackward(false)) return false;
         }
-
         delay(tempdelay);
       }
       return true;
-
     } else {
-      msgForAttemptSendOverSerial = "ERROR motor Z OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxZStep) + ")";
+      msgForAttemptSendOverSerial = "EMotor Z OUT OF BOUNDS (" + String(StepPosition) + ") max (" + String(maxZStep) + ")";
       return false;
     }
   }
+
   // Ping back to server
   if (task == 'N') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
+    msgForAttemptSendOverSerial = "P(" + String(millis()) + ")";
     return true;
   }
-  // move X and Z motor
-  if (task == 'O') {
-    // --- assume taskInfo is exactly two back-to-back segments ---
-    int len = taskInfo.length();
-    int half = len / 2;
 
-    // split in two equal parts
+  // Move X and Z motors simultaneously
+  if (task == 'O') {
+    int half = taskInfo.length() / 2;
     String xSeg = taskInfo.substring(0, half);
     String zSeg = taskInfo.substring(half);
 
-    // parse X
-    float xDelay = (xSeg[0] - '0') + (xSeg[1] - '0') * 0.1f;
+    float xDelay = xSeg.substring(0, 2).toFloat();
     int xSteps = xSeg.substring(2).toInt();
 
-    // parse Z
-    float zDelay = (zSeg[0] - '0') + (zSeg[1] - '0') * 0.1f;
+    float zDelay = zSeg.substring(0, 2).toFloat();
     int zSteps = zSeg.substring(2).toInt();
 
-    // “parallel” blocking loop
     unsigned long nextX = millis();
     unsigned long nextZ = nextX;
     int remX = abs(xSteps), remZ = abs(zSteps);
@@ -600,59 +514,31 @@ bool executeCommand(String givenString) {
 
     return true;
   }
-  // Rotate Y motor
-  if (task == 'P') {
-    // fill in later
+
+  // Stubbed out ping responses for show
+  if (task >= 'P' && task <= 'Z') {
+    msgForAttemptSendOverSerial = "P(" + String(millis()) + ")";
     return true;
   }
-  // Move up and down Y motor
-  if (task == 'Q') {
-   
-    return true;
-  }
-    // Move up and down Y motor
-  if (task == 'R') {
-    
-    return true;
-  }
-  if (task == 'S') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'T') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'U') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'W') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'X') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'Y') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
-  if (task == 'Z') {
-    msgForAttemptSendOverSerial = "Ping (" + String(millis()) + ")";
-    return true;
-  }
+
+  // Unknown command fallback
+  msgForAttemptSendOverSerial = "EUnknown command: " + String(task);
+  digitalWrite(errorLight, HIGH);
+  return false;
 }
+
 
 // Able to execute next command in a string of commands
 String getNextSection(String input) {
-  int sectionNumber = 1;
+  // Always skip the first 5 characters (payload ID)
+  input = input.substring(5);
+
+  int sectionNumber = 0;
   int start = 0;
   int end = input.indexOf(';');
 
   while (end != -1) {
-    if (sectionNumber == lastCompleateCommandExecution + 1) {
+    if (sectionNumber == lastCompleateCommandExecution) {
       return input.substring(start, end);
     }
     sectionNumber++;
@@ -663,50 +549,74 @@ String getNextSection(String input) {
   return "";
 }
 
-// Execute saved commands
+// Send and execute next command or request next payload if needed
 void runCommands() {
+  // Exit early if paused or waiting
+  if (scriptErrorPaused || scriptWait) return;
 
+  // Try to run next command in current payload
   String input = commands[currentCommandStringExecution];
   String nextCommand = getNextSection(input);
 
-  // If next command in string
-  if (nextCommand) {
-    // Run command, if succcess continue
-    if (executeCommand(nextCommand) == true) {
+  if (nextCommand != "") {
+    // Try to run it
+    if (executeCommand(nextCommand)) {
       lastCompleateCommandStringExecution = currentCommandStringExecution;
       lastCompleateCommandExecution = currentCommandExecution;
-      currentCommandExecution += 1;
+      currentCommandExecution++;
     } else {
       scriptErrorPaused = true;
       digitalWrite(errorLight, HIGH);
     }
-  } else {
+    return;  // Done for this loop
+  }
 
-    // Clear last string we compleated and executed
-    commands[currentCommandStringExecution - 1] = "";
-    for (int i = 0; i < numCommands; i++) {
-      if (commands[i].length() == 0) continue;  // Skip empty strings
+  // === Step 1: Clean up and see if any new payloads are waiting ===
 
-      int semicolonIndex = commands[i].indexOf(';');
-      if (semicolonIndex == -1) continue;  // Skip malformed strings
+  // Clear the finished payload (optional: only if fully consumed)
+  commands[currentCommandStringExecution] = "";
 
-      String numberPart = commands[i].substring(0, semicolonIndex);
-      int commandNum = numberPart.toInt();
+  // Try to find the next command payload in sequence
+  bool hasUnfinishedCommand = false;
+  for (int i = 0; i < numCommands; i++) {
+    if (commands[i].length() == 0) continue;
 
-      // New data found, set up for execution
-      if (commandNum == currentCommandNumber + 1) {
+    int semicolonIndex = commands[i].indexOf(';');
+    if (semicolonIndex == -1) continue;  // malformed
 
-        currentCommandStringExecution = i;
-        currentCommandExecution = 0;
-        currentCommandNumber += 1;
-      }
+    String numberPart = commands[i].substring(0, semicolonIndex);
+    int commandNum = numberPart.toInt();
+
+    if (commandNum == currentCommandNumber + 1) {
+      // Found next command string
+      currentCommandStringExecution = i;
+      currentCommandExecution = 0;
+      currentCommandNumber += 1;
+      hasUnfinishedCommand = true;
+      break;
+    }
+  }
+
+  // === Step 2: If no more payloads are present, and nothing else is pending, request next ===
+
+  if (!hasUnfinishedCommand && msgForAttemptSendOverSerial == "") {
+    String nextPayloadID = decimalToBase36(currentCommandNumber + 1);
+    String constructedRequest = "R" + nextPayloadID + "00" +
+                                 String(lastCompleateCommandStringExecution) +
+                                 String(lastCompleateCommandExecution);
+
+    // Only request if 3s passed or request changed
+    if (millis() - lastPayloadRequestTime > 3000 || constructedRequest != lastPayloadRequested) {
+      msgForAttemptSendOverSerial = constructedRequest;
+      lastPayloadRequestTime = millis();
+      lastPayloadRequested = constructedRequest;
     }
   }
 }
 
 // Send bulk data
 void sendData() {
-  if (millis() > lastDataSend + PING_INTERVAL) {
+  if (millis() > lastDataSend + PING_INTERVAL and millis() > Last_Imporntant_Ping_Delay + Imporntant_Ping_Delay) {
     // script error paused Boolean 1 true 0 false
     // script wait paused Boolean 1 true 0 false
     // X leaver triggerd Boolean 1 true 0 false
@@ -715,14 +625,29 @@ void sendData() {
     // Z leaver triggerd Boolean 1 true 0 false
     // Z steps from 0
     // Z steps total
+    // Motor enabled Boolean 1 true 0 false
+    // Fan enabled Boolean 1 true 0 false
     // Last command executed 7 digits 5-2
-    volatile int motorStepPositionZ = 0;
-volatile int motorStepCompleationZ = 0;
-    String payload = "D" + String(scriptErrorPaused) + ";" + String(scriptWait) + ";" + String(digitalRead(PressureLever_ReadX)) + ";" + motorStepPositionX + ";" + motorStepCompleationX + ";" + String(digitalRead(PressureLever_ReadZ)) + ";" + motorStepPositionZ + ";" + motorStepCompleationZ + ";" + lastCompleateCommandStringExecution + lastCompleateCommandExecution;
+
+    lastMessageSentUniqueID += 1;
+    String payload = String(decimalToBase36(lastMessageSentUniqueID)) + "D" + String(scriptErrorPaused) + ";" + String(scriptWait) + ";" + String(digitalRead(PressureLever_ReadX)) + ";" + motorStepPositionX + ";" + motorStepCompleationX + ";" + String(digitalRead(PressureLever_ReadZ)) + ";" + motorStepPositionZ + ";" + motorStepCompleationZ + ";" + String(digitalRead(ENABLE_PIN_MOTOR)) + ";" + String(digitalRead(ENABLE_PIN_FAN)) + ";" + lastCompleateCommandStringExecution + lastCompleateCommandExecution;
     Serial1.println(payload);
 
-    lastDataSend   = millis();
-    lastCommTime   = millis();
+    lastDataSend = millis();
+    lastCommTime = millis();
+  }
+}
+
+void sendImporntantData() {
+
+  if (msgForAttemptSendOverSerial) {
+    lastMessageSentUniqueID += 1;
+    Serial1.println(String(decimalToBase36(lastMessageSentUniqueID)) + "I" + msgForAttemptSendOverSerial + ";" + lastCompleateCommandStringExecution + lastCompleateCommandExecution);
+    msgForAttemptSendOverSerial = "";
+
+    lastDataSend = millis();
+    lastCommTime = millis();
+    Last_Imporntant_Ping_Delay = millis();
   }
 }
 
@@ -731,15 +656,14 @@ void checkCommunication() {
   if (Serial1.available()) {
     String in = Serial1.readStringUntil('\n');
     in.trim();
-    lastCommTime = millis();      // mark that we saw traffic
+    lastCommTime = millis();  // mark that we saw traffic
 
     if (in == "AAreadAA") {
       // always echo a ping, even if already handshaken
       Serial1.println("AAreadAA");
       handshakeDone = true;
       digitalWrite(commLight, LOW);
-    }
-    else {
+    } else {
       // real data frame—handle it here
       if (in.startsWith("I")) {
         if (!executeCommand(in.substring(1))) {
@@ -760,7 +684,7 @@ void checkCommunication() {
           }
         }
         if (!stored) {
-          msgForAttemptSendOverSerial = "ERROR command storage full";
+          msgForAttemptSendOverSerial = "ECommand storage full";
         }
       }
       // …any other incoming types…
@@ -778,7 +702,7 @@ void checkCommunication() {
 
   // — 3) If we *were* handshaken, but it’s been too quiet, force re-handshake
   if (millis() - lastCommTime >= PING_INTERVAL * 5) {
-    handshakeDone    = false;
+    handshakeDone = false;
     digitalWrite(commLight, HIGH);
     return;  // drop back into the “not handshaken” logic
   }
@@ -795,7 +719,6 @@ void setup() {
   pinMode(IN2X, OUTPUT);
   pinMode(IN3X, OUTPUT);
   pinMode(IN4X, OUTPUT);
-  pinMode(ENABLE_PINX, OUTPUT);
   pinMode(PressureLever_ReadX, INPUT);
 
   // ==============================
@@ -805,13 +728,16 @@ void setup() {
   pinMode(IN2Z, OUTPUT);
   pinMode(IN3Z, OUTPUT);
   pinMode(IN4Z, OUTPUT);
-  pinMode(ENABLE_PINZ, OUTPUT);
   pinMode(PressureLever_ReadZ, INPUT);
+
+  pinMode(ENABLE_PIN_MOTOR, OUTPUT);
+  pinMode(ENABLE_PIN_FAN, OUTPUT);
 
   // ==============================
 
   // Initialize Serial1 (TX1/RX1) at 9600 baud for ardunio to ardunio communication
   Serial1.begin(9600);
+  Serial.begin(9600);
 
   // Set light pins as outputs
   pinMode(goodLight, OUTPUT);
